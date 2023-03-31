@@ -46,14 +46,44 @@ int page_size;
 
 // [[[*** Section 3: Defining helper functions ***]]]
 
+// Helper function that checks if segfaulted address is a TLS page address
+int is_pagefault(void* addr){
+	// Iterate through all existing TLS's
+	for (int i = 0; i < MAX_NUM_THREADS; i++){
+		if (tid_tls_pairs[i].tid != (pthread_t) -1){
+			TLS * curTls = tid_tls_pairs[i].tls;
+			for (int j = 0; j < curTls->page_num; j++){
+				if (curTls->pages[j]->address == addr)
+					return 1;
+			}
+		}
+	}
+	// If the address was never found in ANY TLS's, return 0
+	return 0;
+}
+
+// Signal handler for segfaults / page faults
 void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
-	// p_fault = ((unsigned int) si->si_addr) & ~(page_size - 1);
+	// If segfault is a page fault AND page address exists, only exit current thread
+	int p_fault = ((unsigned int) si->si_addr) & ~(page_size - 1);
+	if (p_fault && is_pagefault(si->si_addr)){
+		int status = -1;
+		pthread_exit(&status);
+	}
+	// If segfault WASN'T just a page fault, set to actually fault
+	else{
+		signal(SIGSEGV, SIG_DFL);
+		signal(SIGBUS, SIG_DFL);
+		raise(sig);
+	}
+
+
 }
 
 // Helper function that finds TLS based on tid, returns address index on success, -1 on fail
 int find_tls(pthread_t tid){
 	// Iterate through all possible pairs
-	for (int i = 0; i < num_tls; i++){
+	for (int i = 0; i < MAX_NUM_THREADS; i++){
 		if (tid == tid_tls_pairs[i].tid)
 			return i;
 	}
