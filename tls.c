@@ -39,10 +39,10 @@ void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
 	// p_fault = ((unsigned int) si->si_addr) & ~(page_size - 1);
 }
 
-// Helper function that checks if the current thread has an existing tls_array entry
-int lsa_exists() {
-	int tid = (int) pthread_self();
-	if (tls_array[tid] == NULL)
+// Helper function that checks if the inputted thread has an existing tls_array entry
+int lsa_exists(pthread_t tid) {
+	int index = (int) tid;
+	if (tls_array[index] == NULL)
 		return 0;
 	else
 		return 1;
@@ -70,6 +70,7 @@ void tls_init() {
 
 // [[[*** Section 4: Defining library functions ***]]]
 
+// Function to create a TLS for the current thread
 int tls_create(unsigned int size)
 {
 	// On first call initialize the data structures and signal handler
@@ -78,28 +79,83 @@ int tls_create(unsigned int size)
 		is_first_call = 0;
 		tls_init();
 	}
+	// Check if the current thread already has an LSA
+	if (lsa_exists(pthread_self())){
+		printf("ERROR: LSA already exists\n");
+		return -1;
+	}
+	// If there it has LSA, check if the size is nonzero
+	else {
+		if (tls_array[(int) pthread_self()]->size > 0) {
+			printf("ERROR: Current thread has non-zero storage\n");
+			return -1;
+		}
+	}
 
-	
 
 	return 0;
 }
 
+// Function that destroys the current thread's TLS (decrements all reference counts and deletes if 0)
 int tls_destroy()
 {
+	// Check if current thread has LSA
+	if (!lsa_exists(pthread_self())){
+		printf("ERROR: Current thread has no LSA\n");
+		return -1;
+	}
+
 	return 0;
 }
 
+// Function that reads length bytes from the thread's TLS into buffer
 int tls_read(unsigned int offset, unsigned int length, char *buffer)
 {
+	// Check if current thread has LSA
+	if (!lsa_exists(pthread_self())){
+		printf("ERROR: Current thread has no LSA\n");
+		return -1;
+	}
+
+	// Check if the TLS is large enough to read all bytes to buffer
+	if (tls_array[(int) pthread_self()]->size < (offset + length)){
+		printf("ERROR: Read size larger than LSA size or offset out of range\n");
+	}
+	
 	return 0;
 }
 
+// Function that writes length bytes from buffer into the thread's TLS
 int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 {
+	// Check if current thread has LSA
+	if (!lsa_exists(pthread_self())){
+		printf("ERROR: Current thread has no LSA\n");
+		return -1;
+	}
+
+	// Check if the TLS is large enough to read all bytes to buffer
+	if (tls_array[(int) pthread_self()]->size > (offset + length)){
+		printf("ERROR: Write size larger than LSA can hold\n");
+	}
+
 	return 0;
 }
 
+// Function that clones tid's LSA for the current thread
 int tls_clone(pthread_t tid)
 {
+	// Check if the current thread already has an LSA
+	if (lsa_exists(pthread_self())){
+		printf("ERROR: Current thread already has an LSA\n");
+		return -1;
+	}
+
+	// Check if inputted thread has LSA
+	if (!lsa_exists(tid)){
+		printf("ERROR: Inputted thread has no LSA\n");
+		return -1;
+	}
+
 	return 0;
 }
