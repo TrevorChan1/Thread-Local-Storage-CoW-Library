@@ -65,7 +65,7 @@ int is_pagefault(void* addr){
 // Signal handler for segfaults / page faults
 void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
 	// If segfault is a page fault AND page address exists, only exit current thread
-	int p_fault = ((unsigned int) si->si_addr) & ~(page_size - 1);
+	int p_fault = ((unsigned long) si->si_addr) & ~(page_size - 1);
 	if (p_fault && is_pagefault(si->si_addr)){
 		int status = -1;
 		pthread_exit(&status);
