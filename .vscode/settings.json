@@ -1,7 +1,0 @@
-{
-    "files.associations": {
-        "tls.h": "c",
-        "unistd.h": "c",
-        "inttypes.h": "c"
-    }
-}

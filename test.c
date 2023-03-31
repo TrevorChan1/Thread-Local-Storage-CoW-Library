@@ -8,12 +8,12 @@ void* test(void* arg){
     if (tls_write(0, 7, "hello!")) printf("bruh\n");
     char m[7];
     if (tls_read(0, 7, m)) printf("bruh\n");
-    printf("thread1: %s\n", m);
+    printf("thread 1: %s\n", m);
 
     sleep(2);
 
     if (tls_read(0, 7, m)) printf("bruh\n");
-    printf("thread1: %s\n", m);
+    printf("thread 1: %s\n", m);
 
     return NULL;
 }
