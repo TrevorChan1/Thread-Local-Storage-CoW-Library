@@ -4,9 +4,12 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+
 
 #define MAX_NUM_THREADS 128
-
+#define INT2VOIDP(i) (void*)(uintptr_t)(i)
 
 // [[[*** Section 1: Defining data structures ***]]]
 
@@ -57,7 +60,7 @@ int lsa_exists(pthread_t tid) {
 void tls_protect(struct page *p){
 
 	// Check if it was able to successfully protect the page
-	if (mprotect((void*) p->address, page_size, PROT_NONE)) {
+	if (mprotect(INT2VOIDP(p->address), page_size, PROT_NONE)) {
 		fprintf(stderr, "ERROR: Failed to protect memory area page\n");
 		exit(1);
 	}
@@ -67,7 +70,7 @@ void tls_protect(struct page *p){
 void tls_unprotect(struct page *p){
 
 	// Check if it was able to successfully unprotect the page (allow read / write)
-	if (mprotect((void*) p->address, page_size, PROT_READ | PROT_WRITE)) {
+	if (mprotect(INT2VOIDP(p->address), page_size, PROT_READ | PROT_WRITE)) {
 		fprintf(stderr, "ERROR: Failed to unprotect memory area page\n");
 		exit(1);
 	}
@@ -135,7 +138,7 @@ int tls_create(unsigned int size)
 		for (int i = 0; i < num_pages; i++){
 			// Allocate memory for the page and initialize all values
 			tls->pages[i] = (struct page *) malloc(sizeof(struct page));
-			tls->pages[i]->address = mmap(0, page_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
+			tls->pages[i]->address = (unsigned int) mmap(0, page_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
 			tls->pages[i]->ref_count = 1;
 		}
 		tls->page_num = num_pages;
@@ -163,7 +166,7 @@ int tls_destroy()
 		tls->pages[i]->ref_count--;
 		// If there are no more threads pointing at the page, free that page and the memory it points to
 		if (tls->pages[i]->ref_count == 0){
-			if (munmap(tls->pages[i]->address, page_size)){
+			if (munmap(INT2VOIDP(tls->pages[i]->address), page_size)){
 				printf("ERROR: Failed to free page\n");
 				return -1;
 			}
@@ -218,7 +221,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 			this_read = bytes_left;
 		
 		// Copy this_read bytes into the buffer
-		memcpy(buffer + bytes_read, tls->pages[i]->address + page_offset, this_read);
+		memcpy(buffer + bytes_read, INT2VOIDP(tls->pages[i]->address + page_offset), this_read);
 
 		// Prepare for the next iteration
 		bytes_read += this_read;
@@ -271,7 +274,7 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 			this_write = bytes_left;
 		
 		// Copy this_read bytes into the buffer
-		memcpy(tls->pages[i]->address + page_offset, buffer + bytes_written, this_write);
+		memcpy(INT2VOIDP(tls->pages[i]->address + page_offset), buffer + bytes_written, this_write);
 
 		// Prepare for the next iteration
 		bytes_written += this_write;
