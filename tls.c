@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #define MAX_NUM_THREADS 128
 
@@ -115,7 +116,31 @@ int tls_create(unsigned int size)
 		}
 	}
 
-	tls_array[0] = mmap(0, size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
+	// Initialize the TLS for the current thread
+	TLS * tls = (TLS *) malloc(sizeof(TLS));
+	tls->page_num = 0;
+	tls->pages = NULL;
+	tls->size = size;
+	tls->tid = pthread_self();
+
+	// Initialize each page for the TLS
+	int num_pages = size / page_size;
+	if (size % page_size) num_pages++;
+
+	// If size is 0, then leave pages as NULL in case want to clone!
+	if (num_pages > 0){
+		// Initialize pages array (only need enough to store num_pages pages since never changes)
+		tls->pages = (struct page **) malloc(num_pages * sizeof(struct page));
+		for (int i = 0; i < num_pages; i++){
+			// Allocate memory for the page and initialize all values
+			tls->pages[i] = (struct page *) malloc(sizeof(struct page));
+			tls->pages[i]->address = mmap(0, page_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
+			tls->pages[i]->ref_count = 1;
+		}
+	}
+
+	// Set the current thread's value in the area to be the TLS
+	tls_array[(int) pthread_self()] = tls;
 
 	return 0;
 }
@@ -136,9 +161,14 @@ int tls_destroy()
 		tls->pages[i]->ref_count--;
 		// If there are no more threads pointing at the page, free that page and the memory it points to
 		if (tls->pages[i]->ref_count == 0){
-			free(tls->pages[i]->address);
+			if (munmap(tls->pages[i]->address, page_size)){
+				printf("ERROR: Failed to free page\n");
+				return -1;
+			}
 			free(tls->pages[i]);
 		}
+		// Free the array of pages
+		free(tls->pages);
 	}
 
 	// After freeing all the pages that need to be freed, free the TLS itself
@@ -162,6 +192,8 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 		printf("ERROR: Read size larger than LSA size or offset out of range\n");
 	}
 	
+	// Unprotect the page then reprotect
+
 	return 0;
 }
 
@@ -178,6 +210,8 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 	if (tls_array[(int) pthread_self()]->size > (offset + length)){
 		printf("ERROR: Write size larger than LSA can hold\n");
 	}
+
+	// Unprotect the page then reprotect
 
 	return 0;
 }
