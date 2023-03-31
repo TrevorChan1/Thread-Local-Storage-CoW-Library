@@ -369,5 +369,44 @@ int tls_clone(pthread_t tid)
 		return -1;
 	}
 
+	// Check if there is a free value in tid_tls_pairs (assignment didn't specify max)
+	int free_ind = -1;
+	for (int i = 0; i < MAX_NUM_THREADS; i++){
+		if ((int) tid_tls_pairs[i].tid == -1){
+			free_ind = i;
+			break;
+		}
+	}
+	if (free_ind < 0){
+		printf("ERROR: tid_tls_pairs full\n");
+		return -1;
+	}
+
+	int target_index = find_tls(tid);
+	TLS * target = tid_tls_pairs[target_index].tls;
+
+	// Initialize the TLS for the current thread
+	TLS * tls = (TLS *) malloc(sizeof(TLS));
+	tls->page_num = target->page_num;
+	tls->pages = NULL;
+	tls->size = target->size;
+	tls->tid = pthread_self();
+
+	// If size is 0, then leave pages as NULL in case want to clone!
+	if (target->page_num > 0){
+		// Initialize pages array (only need enough to store num_pages pages since never changes)
+		tls->pages = (struct page **) malloc(target->page_num * sizeof(struct page));
+		for (int i = 0; i < target->page_num; i++){
+			// Since only cloning, set each page to target's pages and increment reference count
+			tls->pages[i] = target->pages[i];
+			tls->pages[i]->ref_count++;
+		}
+	}
+
+	// Set the current thread's value in the area to be the TLS
+	tid_tls_pairs[free_ind].tid = pthread_self();
+	tid_tls_pairs[free_ind].tls = tls;
+	num_tls++;
+
 	return 0;
 }
