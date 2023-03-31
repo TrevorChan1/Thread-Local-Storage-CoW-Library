@@ -1,5 +1,7 @@
 #include "tls.h"
 #include <signal.h>
+#include <sys/mman.h>
+
 #define MAX_NUM_THREADS 128
 
 
@@ -30,7 +32,7 @@ struct tid_tls_pair {
 
 // Global datastructure of tid_tls_pairs (with arbitrary MAX_NUM_THREADS)
 static TLS *tls_array[MAX_NUM_THREADS];
-
+int page_size;
 
 
 // [[[*** Section 3: Defining helper functions ***]]]
@@ -53,7 +55,7 @@ void tls_init() {
 
 	// Initialize signal handler
 	struct sigaction sigact;
-	// page_size = getpagesize();
+	page_size = sysconf(_SC_PAGE_SIZE);
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_flags = SA_SIGINFO;
 	sigact.sa_sigaction = tls_handle_page_fault;
@@ -92,6 +94,7 @@ int tls_create(unsigned int size)
 		}
 	}
 
+	tls_array[0] = mmap(0, size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
 
 	return 0;
 }
@@ -104,6 +107,21 @@ int tls_destroy()
 		printf("ERROR: Current thread has no LSA\n");
 		return -1;
 	}
+
+	// Iterate through all pages
+	TLS * tls = tls_array[(int) pthread_self()];
+	for (int i = 0; i < tls->page_num; i++){
+		// Decrement the reference count (in case other threads point to it)
+		tls->pages[i]->ref_count--;
+		// If there are no more threads pointing at the page, free that page and the memory it points to
+		if (tls->pages[i]->ref_count == 0){
+			free(tls->pages[i]->address);
+			free(tls->pages[i]);
+		}
+	}
+
+	// After freeing all the pages that need to be freed, free the TLS itself
+	free(tls);
 
 	return 0;
 }
