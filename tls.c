@@ -249,16 +249,38 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 
 	TLS * tls = tls_array[(int) pthread_self()];
 
-	// Unprotect all pages of thread's TLS
-	for (int i = 0; i < tls->page_num; i++){
+	// Initialize variables for performing read
+	int page_index = offset / page_size;
+	int page_offset = offset % page_size;
+	int num_pages_write = length / page_size;
+	int bytes_written = 0;
+	int bytes_left = length;
+	if ((length + page_offset) / page_size) num_pages_write++;
+	if ((length + page_offset) % page_size) num_pages_write++;
+
+	// Iterate through all necessary pages and read into buffer
+	for (int i = page_index; i < page_index + num_pages_write; i++){
+		// Unprotect the page so it can be read from
 		tls_unprotect(tls->pages[i]);
-	}
 
-	// Perform write operation
+		// Initialize how many bytes to read this iteration
+		int this_write = 0;
+		if (bytes_left + page_offset >= page_size)
+			this_write = page_size - page_offset;
+		else
+			this_write = bytes_left;
+		
+		// Copy this_read bytes into the buffer
+		memcpy(tls->pages[i]->address + page_offset, buffer + bytes_written, this_write);
 
-	// Reprotect all pages of thread's TLS
-	for (int i = 0; i < tls->page_num; i++){
+		// Prepare for the next iteration
+		bytes_written += this_write;
+		bytes_left -= this_write;
+		if (page_offset) page_offset = 0;
+
+		// Reprotect this page
 		tls_protect(tls->pages[i]);
+
 	}
 
 	return 0;
