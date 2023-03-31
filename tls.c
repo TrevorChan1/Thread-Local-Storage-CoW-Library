@@ -1,6 +1,7 @@
 #include "tls.h"
 #include <signal.h>
 #include <sys/mman.h>
+#include <stdio.h>
 
 #define MAX_NUM_THREADS 128
 
@@ -48,6 +49,26 @@ int lsa_exists(pthread_t tid) {
 		return 0;
 	else
 		return 1;
+}
+
+// Helper function that protects the current thread's LSA
+void tls_protect(struct page *p){
+
+	// Check if it was able to successfully protect the page
+	if (mprotect((void*) p->address, page_size, PROT_NONE)) {
+		fprintf(stderr, "ERROR: Failed to protect memory area page\n");
+		exit(1);
+	}
+}
+
+// Helper function that protects the current thread's LSA
+void tls_unprotect(struct page *p){
+
+	// Check if it was able to successfully unprotect the page (allow read / write)
+	if (mprotect((void*) p->address, page_size, PROT_READ | PROT_WRITE)) {
+		fprintf(stderr, "ERROR: Failed to unprotect memory area page\n");
+		exit(1);
+	}
 }
 
 // Function to be called on first call of tls_create to initialize datastructures and signal handlers
@@ -122,6 +143,7 @@ int tls_destroy()
 
 	// After freeing all the pages that need to be freed, free the TLS itself
 	free(tls);
+	tls_array[(int) pthread_self()] = NULL;
 
 	return 0;
 }
