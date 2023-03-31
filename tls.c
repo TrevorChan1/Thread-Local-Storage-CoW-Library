@@ -331,6 +331,19 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 		// Unprotect the page so it can be read from
 		tls_unprotect(tls->pages[i]);
 
+		// If current page has > 1 references, Copy on Write
+		if (tls->pages[i]->ref_count > 1){
+			// Allocate a new page and copy contents to it
+			void * p = mmap(0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, 0, 0);
+			memcpy(p, tls->pages[i]->address, page_size);
+			tls_protect(tls->pages[i]);
+
+			// Create a new page struct for copied page and set to the current page
+			tls->pages[i] = (struct page *) malloc(sizeof(struct page));
+			tls->pages[i]->address = p;
+			tls->pages[i]->ref_count = 1;
+		}
+		
 		// Initialize how many bytes to read this iteration
 		int this_write = 0;
 		if (bytes_left + page_offset >= page_size)
