@@ -3,6 +3,8 @@ override LDLIBS := -pthread $(LDLIBS)
 
 tls.o: tls.c
 
+test: tls.o test.c
+
 .PHONY: clean
 
 clean:

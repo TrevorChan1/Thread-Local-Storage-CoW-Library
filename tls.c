@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <errno.h>
 
 
 #define MAX_NUM_THREADS 128
@@ -23,7 +24,7 @@ typedef struct thread_local_storage {
 
 // Page: States address of page and number of threads using that specific page
 struct page {
-	unsigned int address;	// Start address of page
+	void * address;	// Start address of page
 	int ref_count; 	// Counter for number of shared pages
 };
 
@@ -37,7 +38,9 @@ struct tid_tls_pair {
 // [[[*** Section 2: Defining global variables ***]]]
 
 // Global datastructure of tid_tls_pairs (with arbitrary MAX_NUM_THREADS)
-static TLS *tls_array[MAX_NUM_THREADS];
+static struct tid_tls_pair tid_tls_pairs[MAX_NUM_THREADS];
+static int tls_initialized = 0;
+static int num_tls = 0;
 int page_size;
 
 
@@ -47,10 +50,26 @@ void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
 	// p_fault = ((unsigned int) si->si_addr) & ~(page_size - 1);
 }
 
+// Helper function that finds TLS based on tid, returns address index on success, -1 on fail
+int find_tls(pthread_t tid){
+	// Iterate through all possible pairs
+	for (int i = 0; i < num_tls; i++){
+		if (tid == tid_tls_pairs[i].tid)
+			return i;
+	}
+
+	// If unsuccessful, return NULL
+	return -1;
+}
+
 // Helper function that checks if the inputted thread has an existing tls_array entry
 int lsa_exists(pthread_t tid) {
-	int index = (int) tid;
-	if (tls_array[index] == NULL)
+	if (!tls_initialized)
+		return 0;
+
+	int index = find_tls(tid);
+
+	if (index < 0)
 		return 0;
 	else
 		return 1;
@@ -60,7 +79,7 @@ int lsa_exists(pthread_t tid) {
 void tls_protect(struct page *p){
 
 	// Check if it was able to successfully protect the page
-	if (mprotect(INT2VOIDP(p->address), page_size, PROT_NONE)) {
+	if (mprotect(p->address, page_size, PROT_NONE)) {
 		fprintf(stderr, "ERROR: Failed to protect memory area page\n");
 		exit(1);
 	}
@@ -70,7 +89,7 @@ void tls_protect(struct page *p){
 void tls_unprotect(struct page *p){
 
 	// Check if it was able to successfully unprotect the page (allow read / write)
-	if (mprotect(INT2VOIDP(p->address), page_size, PROT_READ | PROT_WRITE)) {
+	if (mprotect(p->address, page_size, PROT_READ | PROT_WRITE)) {
 		fprintf(stderr, "ERROR: Failed to unprotect memory area page\n");
 		exit(1);
 	}
@@ -90,7 +109,8 @@ void tls_init() {
 
 	// Initialize global variables
 	for (int i = 0; i < MAX_NUM_THREADS; i++){
-		tls_array[i] = NULL;
+		tid_tls_pairs[i].tls = NULL;
+		tid_tls_pairs[i].tid = (pthread_t) -1;
 	}
 
 }
@@ -102,10 +122,9 @@ void tls_init() {
 int tls_create(unsigned int size)
 {
 	// On first call initialize the data structures and signal handler
-	static int is_first_call = 1;
-	if (is_first_call) {
-		is_first_call = 0;
+	if (!tls_initialized) {
 		tls_init();
+		tls_initialized = 1;
 	}
 	// Check if the current thread already has an LSA
 	if (lsa_exists(pthread_self())){
@@ -113,11 +132,24 @@ int tls_create(unsigned int size)
 		return -1;
 	}
 	// If there it has LSA, check if the size is nonzero
-	else {
-		if (tls_array[(int) pthread_self()]->size > 0) {
-			printf("ERROR: Current thread has non-zero storage\n");
-			return -1;
+	// else {
+	// 	if (tls_array[(int) pthread_self()]->size > 0) {
+	// 		printf("ERROR: Current thread has non-zero storage\n");
+	// 		return -1;
+	// 	}
+	// }
+
+	// Check if there is a free value in tid_tls_pairs (assignment didn't specify max)
+	int free_ind = -1;
+	for (int i = 0; i < MAX_NUM_THREADS; i++){
+		if ((int) tid_tls_pairs[i].tid == -1){
+			free_ind = i;
+			break;
 		}
+	}
+	if (free_ind < 0){
+		printf("ERROR: tid_tls_pairs full\n");
+		return -1;
 	}
 
 	// Initialize the TLS for the current thread
@@ -138,14 +170,24 @@ int tls_create(unsigned int size)
 		for (int i = 0; i < num_pages; i++){
 			// Allocate memory for the page and initialize all values
 			tls->pages[i] = (struct page *) malloc(sizeof(struct page));
-			tls->pages[i]->address = (unsigned int) mmap(0, page_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
+			void * p = mmap(0, page_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
+			// memset(p, 0, page_size);
+
+			// Check if successfully created page
+			if (p == MAP_FAILED){
+				perror("Failed to create page: ");
+				exit(1);
+			}
+			tls->pages[i]->address = p;
 			tls->pages[i]->ref_count = 1;
 		}
 		tls->page_num = num_pages;
 	}
 
 	// Set the current thread's value in the area to be the TLS
-	tls_array[(int) pthread_self()] = tls;
+	tid_tls_pairs[free_ind].tid = pthread_self();
+	tid_tls_pairs[free_ind].tls = tls;
+	num_tls++;
 
 	return 0;
 }
@@ -159,14 +201,21 @@ int tls_destroy()
 		return -1;
 	}
 
-	// Iterate through all pages
-	TLS * tls = tls_array[(int) pthread_self()];
+	// Find the current thread's TLS
+	int index = find_tls(pthread_self());
+	if (index < 0){
+		printf("ERROR: Couldn't find TLS\n");
+		return -1;
+	}
+	TLS * tls = tid_tls_pairs[index].tls;
+
+	// Iterate through all of the pages in the tls
 	for (int i = 0; i < tls->page_num; i++){
 		// Decrement the reference count (in case other threads point to it)
 		tls->pages[i]->ref_count--;
 		// If there are no more threads pointing at the page, free that page and the memory it points to
 		if (tls->pages[i]->ref_count == 0){
-			if (munmap(INT2VOIDP(tls->pages[i]->address), page_size)){
+			if (munmap(tls->pages[i]->address, page_size)){
 				printf("ERROR: Failed to free page\n");
 				return -1;
 			}
@@ -178,7 +227,9 @@ int tls_destroy()
 
 	// After freeing all the pages that need to be freed, free the TLS itself
 	free(tls);
-	tls_array[(int) pthread_self()] = NULL;
+	tid_tls_pairs[index].tid = (pthread_t) -1;
+	tid_tls_pairs[index].tls = NULL;
+	num_tls--;
 
 	return 0;
 }
@@ -192,12 +243,19 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 		return -1;
 	}
 
-	// Check if the TLS is large enough to read all bytes to buffer
-	if (tls_array[(int) pthread_self()]->size < (offset + length)){
-		printf("ERROR: Read size larger than LSA size or offset out of range\n");
+	// Find the current thread's TLS
+	int index = find_tls(pthread_self());
+	if (index < 0){
+		printf("ERROR: Couldn't find TLS\n");
+		return -1;
 	}
+	TLS * tls = tid_tls_pairs[index].tls;
 
-	TLS * tls = tls_array[(int) pthread_self()];
+	// Check if the TLS is large enough to read all bytes to buffer
+	if (tls->size < (offset + length)){
+		printf("ERROR: Read size larger than LSA size or offset out of range\n");
+		return -1;
+	}
 
 	// Initialize variables for performing read
 	int page_index = offset / page_size;
@@ -221,7 +279,7 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 			this_read = bytes_left;
 		
 		// Copy this_read bytes into the buffer
-		memcpy(buffer + bytes_read, INT2VOIDP(tls->pages[i]->address + page_offset), this_read);
+		memcpy(buffer + bytes_read, (char *) tls->pages[i]->address + page_offset, this_read);
 
 		// Prepare for the next iteration
 		bytes_read += this_read;
@@ -245,12 +303,19 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 		return -1;
 	}
 
-	// Check if the TLS is large enough to read all bytes to buffer
-	if (tls_array[(int) pthread_self()]->size > (offset + length)){
-		printf("ERROR: Write size larger than LSA can hold\n");
+	// Find the current thread's TLS
+	int index = find_tls(pthread_self());
+	if (index < 0){
+		printf("ERROR: Couldn't find TLS\n");
+		return -1;
 	}
+	TLS * tls = tid_tls_pairs[index].tls;
 
-	TLS * tls = tls_array[(int) pthread_self()];
+	// Check if the TLS is large enough to read all bytes to buffer
+	if (tls->size < (offset + length)){
+		printf("ERROR: Write size larger than LSA can hold\n");
+		return -1;
+	}
 
 	// Initialize variables for performing read
 	int page_index = offset / page_size;
@@ -274,7 +339,7 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 			this_write = bytes_left;
 		
 		// Copy this_read bytes into the buffer
-		memcpy(INT2VOIDP(tls->pages[i]->address + page_offset), buffer + bytes_written, this_write);
+		memcpy((char *) tls->pages[i]->address + page_offset, buffer + bytes_written, this_write);
 
 		// Prepare for the next iteration
 		bytes_written += this_write;
