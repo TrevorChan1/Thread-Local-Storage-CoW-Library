@@ -67,8 +67,7 @@ void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
 	// If segfault is a page fault AND page address exists, only exit current thread
 	int p_fault = ((unsigned long) si->si_addr) & ~(page_size - 1);
 	if (p_fault && is_pagefault(si->si_addr)){
-		int status = -1;
-		pthread_exit(&status);
+		pthread_exit(&sig);
 	}
 	// If segfault WASN'T just a page fault, set to actually fault
 	else{
@@ -76,8 +75,6 @@ void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
 		signal(SIGBUS, SIG_DFL);
 		raise(sig);
 	}
-
-
 }
 
 // Helper function that finds TLS based on tid, returns address index on success, -1 on fail
@@ -130,7 +127,7 @@ void tls_init() {
 
 	// Initialize signal handler
 	struct sigaction sigact;
-	page_size = sysconf(_SC_PAGE_SIZE);
+	page_size = getpagesize();
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_flags = SA_SIGINFO;
 	sigact.sa_sigaction = tls_handle_page_fault;

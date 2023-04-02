@@ -5,7 +5,8 @@
 
 // Function for thread 1: Create TLS, write and read to it, wait then read from it again
 void* test(void* arg){
-    if (tls_create(100)) printf("bruh\n");
+    if (tls_read(0, 7, "hello!")) printf("bruh\n"); 
+    if (tls_create(8000)) printf("bruh\n");
     if (tls_write(0, 7, "hello!")) printf("bruh\n");
     char m[7];
     if (tls_read(0, 7, m)) printf("bruh\n");
