@@ -9,7 +9,7 @@
 #include <errno.h>
 
 
-#define MAX_NUM_THREADS 128
+#define MAX_NUM_THREADS 512
 #define INT2VOIDP(i) (void*)(uintptr_t)(i)
 
 // [[[*** Section 1: Defining data structures ***]]]
@@ -24,7 +24,7 @@ typedef struct thread_local_storage {
 
 // Page: States address of page and number of threads using that specific page
 struct page {
-	void * address;	// Start address of page
+	uintptr_t address;	// Start address of page
 	int ref_count; 	// Counter for number of shared pages
 };
 
@@ -47,13 +47,13 @@ int page_size;
 // [[[*** Section 3: Defining helper functions ***]]]
 
 // Helper function that checks if segfaulted address is a TLS page address
-int is_pagefault(void* addr){
+int is_pagefault(unsigned long addr){
 	// Iterate through all existing TLS's
 	for (int i = 0; i < MAX_NUM_THREADS; i++){
 		if (tid_tls_pairs[i].tid != (pthread_t) -1){
 			TLS * curTls = tid_tls_pairs[i].tls;
 			for (int j = 0; j < curTls->page_num; j++){
-				if (curTls->pages[j]->address == addr)
+				if ((unsigned long) curTls->pages[j]->address == addr)
 					return 1;
 			}
 		}
@@ -65,16 +65,14 @@ int is_pagefault(void* addr){
 // Signal handler for segfaults / page faults
 void tls_handle_page_fault(int sig, siginfo_t *si, void *context){
 	// If segfault is a page fault AND page address exists, only exit current thread
-	int p_fault = ((unsigned long) si->si_addr) & ~(page_size - 1);
-	if (p_fault && is_pagefault(si->si_addr)){
-		pthread_exit(&sig);
+	unsigned long p_fault = ((unsigned long) si->si_addr) & ~(page_size - 1);
+	if (is_pagefault(p_fault)){
+		pthread_exit(NULL);
 	}
 	// If segfault WASN'T just a page fault, set to actually fault
-	else{
-		signal(SIGSEGV, SIG_DFL);
-		signal(SIGBUS, SIG_DFL);
-		raise(sig);
-	}
+	signal(SIGSEGV, SIG_DFL);
+	signal(SIGBUS, SIG_DFL);
+	raise(sig);
 }
 
 // Helper function that finds TLS based on tid, returns address index on success, -1 on fail
@@ -106,7 +104,7 @@ int lsa_exists(pthread_t tid) {
 void tls_protect(struct page *p){
 
 	// Check if it was able to successfully protect the page
-	if (mprotect(p->address, page_size, PROT_NONE)) {
+	if (mprotect((void*) p->address, page_size, PROT_NONE)) {
 		fprintf(stderr, "ERROR: Failed to protect memory area page\n");
 		exit(1);
 	}
@@ -116,7 +114,7 @@ void tls_protect(struct page *p){
 void tls_unprotect(struct page *p){
 
 	// Check if it was able to successfully unprotect the page (allow read / write)
-	if (mprotect(p->address, page_size, PROT_READ | PROT_WRITE)) {
+	if (mprotect((void*) p->address, page_size, PROT_READ | PROT_WRITE)) {
 		fprintf(stderr, "ERROR: Failed to unprotect memory area page\n");
 		exit(1);
 	}
@@ -153,42 +151,51 @@ int tls_create(unsigned int size)
 		tls_init();
 		tls_initialized = 1;
 	}
+	int index = find_tls(pthread_self());
 	// Check if the current thread already has an LSA
 	if (lsa_exists(pthread_self())){
-		printf("ERROR: LSA already exists\n");
-		return -1;
-	}
-	// If there it has LSA, check if the size is nonzero
-	// else {
-	// 	if (tls_array[(int) pthread_self()]->size > 0) {
-	// 		printf("ERROR: Current thread has non-zero storage\n");
-	// 		return -1;
-	// 	}
-	// }
-
-	// Check if there is a free value in tid_tls_pairs (assignment didn't specify max)
-	int free_ind = -1;
-	for (int i = 0; i < MAX_NUM_THREADS; i++){
-		if ((int) tid_tls_pairs[i].tid == -1){
-			free_ind = i;
-			break;
+		// If there it has LSA, check if the size is nonzero
+		if (tid_tls_pairs[index].tls->size > 0) {
+			printf("ERROR: Current thread has non-zero storage\n");
+			return -1;
 		}
 	}
-	if (free_ind < 0){
-		printf("ERROR: tid_tls_pairs full\n");
-		return -1;
+	
+	TLS * tls;
+	if (index < 0){
+		// Check if there is a free value in tid_tls_pairs (assignment didn't specify max)
+		int free_ind = -1;
+		for (int i = 0; i < MAX_NUM_THREADS; i++){
+			if ((int) tid_tls_pairs[i].tid == -1){
+				free_ind = i;
+				break;
+			}
+		}
+		if (free_ind < 0){
+			printf("ERROR: tid_tls_pairs full\n");
+			return -1;
+		}
+
+		// Initialize the TLS for the current thread
+		tls = (TLS *) malloc(sizeof(TLS));
+		tls->page_num = 0;
+		tls->pages = NULL;
+		tls->size = 0;
+		tls->tid = pthread_self();
+
+		// Set the current thread's value in the area to be the TLS
+		tid_tls_pairs[free_ind].tid = pthread_self();
+		tid_tls_pairs[free_ind].tls = tls;
+	}
+	else{
+		tls = tid_tls_pairs[index].tls;
 	}
 
-	// Initialize the TLS for the current thread
-	TLS * tls = (TLS *) malloc(sizeof(TLS));
-	tls->page_num = 0;
-	tls->pages = NULL;
-	tls->size = size;
-	tls->tid = pthread_self();
 
 	// Initialize each page for the TLS
 	int num_pages = size / page_size;
 	if (size % page_size) num_pages++;
+	tls->size = num_pages * page_size;
 
 	// If size is 0, then leave pages as NULL in case want to clone!
 	if (num_pages > 0){
@@ -198,22 +205,20 @@ int tls_create(unsigned int size)
 			// Allocate memory for the page and initialize all values
 			tls->pages[i] = (struct page *) malloc(sizeof(struct page));
 			void * p = mmap(0, page_size, PROT_NONE, MAP_ANON | MAP_PRIVATE, 0, 0);
-			// memset(p, 0, page_size);
 
 			// Check if successfully created page
 			if (p == MAP_FAILED){
+				int errnum = errno;
+				printf("Error number: %d\n", errnum);
 				perror("Failed to create page: ");
 				exit(1);
 			}
-			tls->pages[i]->address = p;
+			
+			tls->pages[i]->address = (uintptr_t) p;
 			tls->pages[i]->ref_count = 1;
 		}
 		tls->page_num = num_pages;
 	}
-
-	// Set the current thread's value in the area to be the TLS
-	tid_tls_pairs[free_ind].tid = pthread_self();
-	tid_tls_pairs[free_ind].tls = tls;
 	num_tls++;
 
 	return 0;
@@ -242,16 +247,15 @@ int tls_destroy()
 		tls->pages[i]->ref_count--;
 		// If there are no more threads pointing at the page, free that page and the memory it points to
 		if (tls->pages[i]->ref_count == 0){
-			if (munmap(tls->pages[i]->address, page_size)){
+			if (munmap((void*) tls->pages[i]->address, page_size)){
 				printf("ERROR: Failed to free page\n");
 				return -1;
 			}
 			free(tls->pages[i]);
 		}
 		// Free the array of pages
-		free(tls->pages);
 	}
-
+	free(tls->pages);
 	// After freeing all the pages that need to be freed, free the TLS itself
 	free(tls);
 	tid_tls_pairs[index].tid = (pthread_t) -1;
@@ -288,10 +292,11 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 	int page_index = offset / page_size;
 	int page_offset = offset % page_size;
 	int num_pages_read = length / page_size;
+	int length_offset = length % page_size;
 	int bytes_read = 0;
 	int bytes_left = length;
-	if ((length + page_offset) / page_size) num_pages_read++;
-	if ((length + page_offset) % page_size) num_pages_read++;
+	if ((length_offset + page_offset) / page_size) num_pages_read++;
+	if ((length_offset + page_offset) % page_size) num_pages_read++;
 
 	// Iterate through all necessary pages and read into buffer
 	for (int i = page_index; i < page_index + num_pages_read; i++){
@@ -347,11 +352,12 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 	// Initialize variables for performing read
 	int page_index = offset / page_size;
 	int page_offset = offset % page_size;
+	int length_offset = length % page_size;
 	int num_pages_write = length / page_size;
 	int bytes_written = 0;
 	int bytes_left = length;
-	if ((length + page_offset) / page_size) num_pages_write++;
-	if ((length + page_offset) % page_size) num_pages_write++;
+	if ((length_offset + page_offset) / page_size) num_pages_write++;
+	if ((length_offset + page_offset) % page_size) num_pages_write++;
 
 	// Iterate through all necessary pages and read into buffer
 	for (int i = page_index; i < page_index + num_pages_write; i++){
@@ -362,12 +368,12 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 		if (tls->pages[i]->ref_count > 1){
 			// Allocate a new page and copy contents to it
 			void * p = mmap(0, page_size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, 0, 0);
-			memcpy(p, tls->pages[i]->address, page_size);
+			memcpy(p, (void*) tls->pages[i]->address, page_size);
 			tls_protect(tls->pages[i]);
 
 			// Create a new page struct for copied page and set to the current page
 			tls->pages[i] = (struct page *) malloc(sizeof(struct page));
-			tls->pages[i]->address = p;
+			tls->pages[i]->address = (uintptr_t) p;
 			tls->pages[i]->ref_count = 1;
 		}
 		
